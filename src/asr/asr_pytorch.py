@@ -46,6 +46,7 @@ import lm_pytorch
 import matplotlib
 matplotlib.use('Agg')
 
+from ctypes import *
 
 class PytorchSeqEvaluaterKaldi(extensions.Evaluator):
     '''Custom evaluater for pytorch'''
@@ -415,6 +416,18 @@ def recog(args):
 
     model.load_state_dict(remove_dataparallel(torch.load(args.model, map_location=cpu_loader)))
 
+    if args.wfstlm:
+        libdir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) + '/tools/kaldi/src/fstext/'
+        wfstlm = CDLL(libdir + 'libkaldi-fstext.so')
+        wfstlm.allocate.argtypes=[POINTER(c_char)]
+        STR=(c_char*len(args.wfstlm))(*bytes(args.wfstlm))
+        ret=wfstlm.allocate(STR)
+        if ret != 0:
+          logging.error('loading error %s' %args.wfstlm)
+          sys.exit(1)
+    else:
+        wfstlm = None
+
     # read rnnlm
     if args.rnnlm:
         rnnlm = lm_pytorch.ClassifierWithState(
@@ -454,7 +467,7 @@ def recog(args):
     new_json = {}
     for name in recog_json.keys():
         feat = kaldi_io_py.read_mat(recog_json[name]['input'][0]['feat'])
-        nbest_hyps = e2e.recognize(feat, args, train_args.char_list, rnnlm=rnnlm)
+        nbest_hyps = e2e.recognize(feat, args, train_args.char_list, rnnlm=rnnlm, wfstlm=wfstlm)
         # get 1best and remove sos
         y_hat = nbest_hyps[0]['yseq'][1:]
         y_true = map(int, recog_json[name]['output'][0]['tokenid'].split())

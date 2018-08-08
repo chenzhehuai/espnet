@@ -26,6 +26,7 @@ from ctc_prefix_score import CTCPrefixScore
 from e2e_asr_common import end_detect
 from e2e_asr_common import label_smoothing_dist
 
+from ctypes import *
 
 torch_is_old = torch.__version__.startswith("0.3.")
 
@@ -334,7 +335,7 @@ class E2E(torch.nn.Module):
 
         return loss_ctc, loss_att, acc
 
-    def recognize(self, x, recog_args, char_list, rnnlm=None):
+    def recognize(self, x, recog_args, char_list, rnnlm=None, wfstlm=None):
         '''E2E beam search
 
         :param x:
@@ -366,7 +367,7 @@ class E2E(torch.nn.Module):
 
         # 2. decoder
         # decode the first utterance
-        y = self.dec.recognize_beam(h[0], lpz, recog_args, char_list, rnnlm)
+        y = self.dec.recognize_beam(h[0], lpz, recog_args, char_list, rnnlm, wfstlm)
 
         if prev:
             self.train()
@@ -1763,7 +1764,7 @@ class Decoder(torch.nn.Module):
 
         return self.loss, acc
 
-    def recognize_beam(self, h, lpz, recog_args, char_list, rnnlm=None):
+    def recognize_beam(self, h, lpz, recog_args, char_list, rnnlm=None, wfstlm=None):
         '''beam search implementation
 
         :param Variable h:
@@ -1808,6 +1809,8 @@ class Decoder(torch.nn.Module):
                    'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
         else:
             hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a}
+        if wfstlm:
+            hyp['wfstlm_prev'] =  wfstlm.init()
         if lpz is not None:
             ctc_prefix_score = CTCPrefixScore(lpz.numpy(), 0, self.eos, np)
             hyp['ctc_state_prev'] = ctc_prefix_score.initial_state()
@@ -1874,6 +1877,23 @@ class Decoder(torch.nn.Module):
                     if lpz is not None:
                         new_hyp['ctc_state_prev'] = ctc_states[joint_best_ids[0, j]]
                         new_hyp['ctc_score_prev'] = ctc_scores[joint_best_ids[0, j]]
+
+                    cid = int(local_best_ids[0, j])
+                    # TODO cid == 0 proc cid == odim-1 <eos> and <blk> 
+                    # odim needs to +2 comes from CTC blank and EOS , see ~/src/espnet/src/utils/data2json.sh
+                    if wfstlm:
+                      if cid != self.eos and cid != 0:
+                        lm_state_next=c_int(0)
+                        score=c_float(0)
+                        ret=wfstlm.get_next(hyp['wfstlm_prev'], cid, byref(lm_state_next), byref(score)) #0 is <eps> or <eos>
+                        if ret != 0:
+                          	logging.error("fail to get wfstlm score %i %i "%(hyp['wfstlm_prev'].value,cid))
+                          	sys.exit(1)
+                        # TODO pruning
+                        new_hyp['score'] -= score.value # weight wfst
+                        new_hyp['wfstlm_prev'] = lm_state_next 
+                      else:
+                        new_hyp['wfstlm_prev'] = hyp['wfstlm_prev']
                     # will be (2 x beam) hyps at most
                     hyps_best_kept.append(new_hyp)
 
