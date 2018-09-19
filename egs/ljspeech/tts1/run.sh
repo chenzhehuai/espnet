@@ -7,11 +7,13 @@
 . ./cmd.sh
 
 # genearl configuration
+backend=pytorch
 stage=-1
 ngpu=1       # number of gpu in training
 nj=32        # numebr of parallel jobs
 dumpdir=dump # directory to dump full features
-verbose=0    # verbose option (if set > 1, get more log)
+verbose=0    # verbose option (if set > 0, get more log)
+N=0          # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
 seed=1       # random seed number
 resume=""    # the snapshot path to resume (if set empty, no effect)
 # feature extraction related
@@ -49,9 +51,9 @@ use_masking=true    # whether to mask the padded part in loss calculation
 bce_pos_weight=1.0  # weight for positive samples of stop token in cross-entropy calculation
 # minibatch related
 batchsize=32
-batch_sort_key="" # empty or input or output (if empty, shuffled batch will be used)
-maxlen_in=150     # if input length  > maxlen_in, batchsize is reduced (if batch_sort_key="", not effect)
-maxlen_out=400    # if output length > maxlen_out, batchsize is reduced (if batch_sort_key="", not effect)
+batch_sort_key=shuffle # shuffle or input or output
+maxlen_in=150     # if input length  > maxlen_in, batchsize is reduced (if use "shuffle", not effect)
+maxlen_out=400    # if output length > maxlen_out, batchsize is reduced (if use "shuffle", not effect)
 # optimization related
 lr=1e-3
 eps=1e-6
@@ -61,9 +63,10 @@ zoneout=0.1
 epochs=200
 # decoding related
 model=model.loss.best
-threshold=0.7    # threshold to stop the generation
+threshold=0.5    # threshold to stop the generation
 maxlenratio=10.0 # maximum length of generated samples = input length * maxlenratio
 minlenratio=0.0  # minimum length of generated samples = input length * minlenratio
+griffin_lim_iters=1000  # the number of iterations of Griffin-Lim
 
 # root directory of db
 db_root=downloads
@@ -159,7 +162,7 @@ fi
 
 
 if [ -z ${tag} ];then
-    expdir=exp/${train_set}_taco2_enc${embed_dim}
+    expdir=exp/${train_set}_${backend}_taco2_enc${embed_dim}
     if [ ${econv_layers} -gt 0 ];then
         expdir=${expdir}-${econv_layers}x${econv_filts}x${econv_chans}
     fi
@@ -187,12 +190,12 @@ if [ -z ${tag} ];then
         expdir=${expdir}_msk_pw${bce_pos_weight}
     fi
     expdir=${expdir}_do${dropout}_zo${zoneout}_lr${lr}_ep${eps}_wd${weight_decay}_bs$((batchsize*ngpu))
-    if [ ! -z ${batch_sort_key} ];then
+    if [ ! ${batch_sort_key} = "shuffle" ];then
         expdir=${expdir}_sort_by_${batch_sort_key}_mli${maxlen_in}_mlo${maxlen_out}
     fi
     expdir=${expdir}_sd${seed}
 else
-    expdir=exp/${train_set}_${tag}
+    expdir=exp/${train_set}_${backend}_${tag}
 fi
 if [ ${stage} -le 3 ];then
     echo "stage 3: Text-to-speech model training"
@@ -200,7 +203,9 @@ if [ ${stage} -le 3 ];then
     dt_json=${feat_dt_dir}/data.json
     ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
         tts_train.py \
+           --backend ${backend} \
            --ngpu ${ngpu} \
+           --minibatches ${N} \
            --outdir ${expdir}/results \
            --verbose ${verbose} \
            --seed ${seed} \
@@ -231,8 +236,8 @@ if [ ${stage} -le 3 ];then
            --bce_pos_weight ${bce_pos_weight} \
            --lr ${lr} \
            --eps ${eps} \
-           --dropout-rate ${dropout} \
-           --zoneout-rate ${zoneout} \
+           --dropout ${dropout} \
+           --zoneout ${zoneout} \
            --weight-decay ${weight_decay} \
            --batch_sort_key ${batch_sort_key} \
            --batch-size ${batchsize} \
@@ -251,13 +256,12 @@ if [ ${stage} -le 4 ];then
         # decode in parallel
         ${train_cmd} JOB=1:$nj ${outdir}/${sets}/log/decode.JOB.log \
             tts_decode.py \
-                --backend pytorch \
+                --backend ${backend} \
                 --ngpu 0 \
                 --verbose ${verbose} \
                 --out ${outdir}/${sets}/feats.JOB \
                 --json ${outdir}/${sets}/split${nj}utt/data.JOB.json \
                 --model ${expdir}/results/${model} \
-                --model-conf ${expdir}/results/model.conf \
                 --threshold ${threshold} \
                 --maxlenratio ${maxlenratio} \
                 --minlenratio ${minlenratio}
@@ -283,6 +287,7 @@ if [ ${stage} -le 5 ];then
             --n_shift ${n_shift} \
             --win_length "${win_length}" \
             --n_mels ${n_mels} \
+            --iters ${griffin_lim_iters} \
             ${outdir}_denorm/${sets} \
             ${outdir}_denorm/${sets}/log \
             ${outdir}_denorm/${sets}/wav

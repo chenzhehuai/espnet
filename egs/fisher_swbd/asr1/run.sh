@@ -9,8 +9,7 @@
 # general configuration
 backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
-gpu=            # will be deprecated, please use ngpu
-ngpu=0          # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=0         # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -18,7 +17,7 @@ verbose=0      # verbose option
 resume=        # Resume the training from snapshot
 
 # feature configuration
-do_delta=false # true when using CNN
+do_delta=false
 
 # network archtecture
 # encoder related
@@ -48,15 +47,23 @@ opt=adadelta
 epochs=15
 
 # rnnlm related
-lm_weight=1.0
+lm_layers=2
+lm_units=650
+lm_opt=sgd        # or adam
+lm_batchsize=256  # batch size in LM training
+lm_epochs=20      # if the data size is large, we can reduce this
+lm_maxlen=100     # if sentence length > lm_maxlen, lm_batchsize is automatically reduced
+lm_resume=        # specify a snapshot file to resume LM training
+lmtag=            # tag for managing LMs
 
 # decoding parameter
+lm_weight=1.0
 beam_size=20
 penalty=0.0
 maxlenratio=0.0
 minlenratio=0.0
 ctc_weight=0.3
-recog_model=acc.best # set a model to be used for decoding: 'acc.best' or 'loss.best'
+recog_model=model.acc.best # set a model to be used for decoding: 'model.acc.best' or 'model.loss.best'
 
 # data
 fisher_dir="/export/corpora3/LDC/LDC2004T19 /export/corpora3/LDC/LDC2005T19 /export/corpora3/LDC/LDC2004S13 /export/corpora3/LDC/LDC2005S13"
@@ -71,17 +78,6 @@ tag="" # tag for managing experiments.
 
 . ./path.sh
 . ./cmd.sh
-
-# check gpu option usage
-if [ ! -z $gpu ]; then
-    echo "WARNING: --gpu option will be deprecated."
-    echo "WARNING: please use --ngpu option."
-    if [ $gpu -eq -1 ]; then
-        ngpu=0
-    else
-        ngpu=1
-    fi
-fi
 
 # Set bash to 'debug' mode, it will exit on :
 # -e 'error', -u 'undefined variable', -o ... 'error in pipeline', -x 'print commands',
@@ -137,7 +133,8 @@ if [ ${stage} -le 1 ]; then
     fbankdir=fbank
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
     for x in train_all ${recog_set}; do
-        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 32 data/${x} exp/make_fbank/${x} ${fbankdir}
+        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 32 --write_utt2num_frames true \
+            data/${x} exp/make_fbank/${x} ${fbankdir}
     done
 
     # remove utt having more than 3000 frames or less than 10 frames or
@@ -204,38 +201,48 @@ if [ ${stage} -le 2 ]; then
 fi
 
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
+    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
     if ${do_delta}; then
         expdir=${expdir}_delta
     fi
 else
-    expdir=exp/${train_set}_${tag}
+    expdir=exp/${train_set}_${backend}_${tag}
 fi
 mkdir -p ${expdir}
 
-lmexpdir=exp/train_rnnlm_2layer_bs256
+if [ -z ${lmtag} ]; then
+    lmtag=${lm_layers}layer_unit${lm_units}_${lm_opt}_bs${lm_batchsize}
+fi
+lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
+
 if [ ${stage} -le 3 ]; then
     echo "stage 3: LM Preparation"
     lmdatadir=data/local/lm_train
     mkdir -p ${lmdatadir}
-    text2token.py -s 1 -n 1 -l ${nlsyms} data/train_all/text | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' \
+    text2token.py -s 1 -n 1 -l ${nlsyms} data/train_all/text | cut -f 2- -d" " \
         > ${lmdatadir}/train.txt
-    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_dev}/text | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' \
+    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_dev}/text | cut -f 2- -d" " \
         > ${lmdatadir}/valid.txt
     # use only 1 gpu
     if [ ${ngpu} -gt 1 ]; then
         echo "LM training does not support multi-gpu. signle gpu will be used."
     fi
-    ${cuda_cmd} ${lmexpdir}/train.log \
+    ${cuda_cmd} --gpu ${ngpu} ${lmexpdir}/train.log \
         lm_train.py \
         --ngpu ${ngpu} \
         --backend ${backend} \
         --verbose 1 \
-        --batchsize 256 \
         --outdir ${lmexpdir} \
         --train-label ${lmdatadir}/train.txt \
         --valid-label ${lmdatadir}/valid.txt \
+        --resume ${lm_resume} \
+        --layer ${lm_layers} \
+        --unit ${lm_units} \
+        --opt ${lm_opt} \
+        --batchsize ${lm_batchsize} \
+        --epoch ${lm_epochs} \
+        --maxlen ${lm_maxlen} \
         --dict ${dict}
 fi
 
@@ -280,7 +287,7 @@ if [ ${stage} -le 5 ]; then
 
     for rtask in ${recog_set}; do
     (
-        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}
+        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
@@ -295,8 +302,7 @@ if [ ${stage} -le 5 ]; then
             --backend ${backend} \
             --recog-json ${feat_recog_dir}/split${nj}utt/data.JOB.json \
             --result-label ${expdir}/${decode_dir}/data.JOB.json \
-            --model ${expdir}/results/model.${recog_model}  \
-            --model-conf ${expdir}/results/model.conf  \
+            --model ${expdir}/results/${recog_model}  \
             --beam-size ${beam_size} \
             --penalty ${penalty} \
             --maxlenratio ${maxlenratio} \

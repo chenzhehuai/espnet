@@ -7,6 +7,7 @@
 . ./cmd.sh
 
 # genearl configuration
+backend=pytorch
 stage=-1
 ngpu=1       # number of gpu in training
 nj=32        # numebr of parallel jobs
@@ -50,9 +51,9 @@ use_masking=true    # whether to mask the padded part in loss calculation
 bce_pos_weight=1.0  # weight for positive samples of stop token in cross-entropy calculation
 # minibatch related
 batchsize=64
-batch_sort_key="output" # empty or input or output (if empty, shuffled batch will be used)
-maxlen_in=150           # if input length  > maxlen_in, batchsize is reduced (if batch_sort_key="", not effect)
-maxlen_out=400          # if output length > maxlen_out, batchsize is reduced (if batch_sort_key="", not effect)
+batch_sort_key=output # empty or input or output (if empty, shuffled batch will be used)
+maxlen_in=150     # if input length  > maxlen_in, batchsize is reduced (if batch_sort_key="", not effect)
+maxlen_out=400    # if output length > maxlen_out, batchsize is reduced (if batch_sort_key="", not effect)
 # optimization related
 lr=1e-3
 eps=1e-6
@@ -209,7 +210,7 @@ fi
 
 
 if [ -z ${tag} ];then
-    expdir=exp/${train_set}_taco2_enc${embed_dim}
+    expdir=exp/${train_set}_${backend}_taco2_enc${embed_dim}
     if [ ${econv_layers} -gt 0 ];then
         expdir=${expdir}-${econv_layers}x${econv_filts}x${econv_chans}
     fi
@@ -237,12 +238,12 @@ if [ -z ${tag} ];then
         expdir=${expdir}_msk_pw${bce_pos_weight}
     fi
     expdir=${expdir}_do${dropout}_zo${zoneout}_lr${lr}_ep${eps}_wd${weight_decay}_bs$((batchsize*ngpu))
-    if [ ! -z ${batch_sort_key} ];then
+    if [ ! ${batch_sort_key} = "shuffle" ];then
         expdir=${expdir}_sort_by_${batch_sort_key}_mli${maxlen_in}_mlo${maxlen_out}
     fi
     expdir=${expdir}_sd${seed}
 else
-    expdir=exp/${train_set}_${tag}
+    expdir=exp/${train_set}_${backend}_${tag}
 fi
 if [ ${stage} -le 4 ];then
     echo "stage 4: Text-to-speech model training"
@@ -250,6 +251,7 @@ if [ ${stage} -le 4 ];then
     dt_json=${feat_dt_dir}/data.json
     ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
         tts_train.py \
+           --backend ${backend} \
            --ngpu ${ngpu} \
            --outdir ${expdir}/results \
            --verbose ${verbose} \
@@ -282,8 +284,8 @@ if [ ${stage} -le 4 ];then
            --bce_pos_weight ${bce_pos_weight} \
            --lr ${lr} \
            --eps ${eps} \
-           --dropout-rate ${dropout} \
-           --zoneout-rate ${zoneout} \
+           --dropout ${dropout} \
+           --zoneout ${zoneout} \
            --weight-decay ${weight_decay} \
            --batch_sort_key ${batch_sort_key} \
            --batch-size ${batchsize} \
@@ -302,13 +304,12 @@ if [ ${stage} -le 5 ];then
         # decode in parallel
         ${train_cmd} JOB=1:$nj ${outdir}/${sets}/log/decode.JOB.log \
             tts_decode.py \
-                --backend pytorch \
+                --backend ${backend} \
                 --ngpu 0 \
                 --verbose ${verbose} \
                 --out ${outdir}/${sets}/feats.JOB \
                 --json ${outdir}/${sets}/split${nj}utt/data.JOB.json \
                 --model ${expdir}/results/${model} \
-                --model-conf ${expdir}/results/model.conf \
                 --threshold ${threshold} \
                 --maxlenratio ${maxlenratio} \
                 --minlenratio ${minlenratio}

@@ -22,8 +22,6 @@ import sys
 def main():
     parser = argparse.ArgumentParser()
     # general configuration
-    parser.add_argument('--gpu', default=None, type=int, nargs='?',
-                        help='GPU ID (negative value indicates CPU)')
     parser.add_argument('--ngpu', default=0, type=int,
                         help='Number of GPUs')
     parser.add_argument('--backend', default='chainer', type=str,
@@ -37,27 +35,33 @@ def main():
                         help='Dictionary')
     parser.add_argument('--seed', default=1, type=int,
                         help='Random seed')
-    parser.add_argument('--minibatches', '-N', type=int, default='-1',
-                        help='Process only N minibatches (for debug)')
+    parser.add_argument('--resume', '-r', default='', nargs='?',
+                        help='Resume the training from snapshot')
     parser.add_argument('--verbose', '-V', default=0, type=int,
                         help='Verbose option')
     # task related
     parser.add_argument('--train-label', type=str, required=True,
-                        help='Filename of train label data (json)')
+                        help='Filename of train label data')
     parser.add_argument('--valid-label', type=str, required=True,
-                        help='Filename of validation label data (json)')
+                        help='Filename of validation label data')
+    parser.add_argument('--test-label', type=str,
+                        help='Filename of test label data')
     # LSTMLM training configuration
-    parser.add_argument('--batchsize', '-b', type=int, default=2048,
+    parser.add_argument('--opt', default='sgd', type=str,
+                        choices=['sgd', 'adam'],
+                        help='Optimizer')
+    parser.add_argument('--batchsize', '-b', type=int, default=300,
                         help='Number of examples in each mini-batch')
-    parser.add_argument('--bproplen', '-l', type=int, default=35,
-                        help='Number of words in each mini-batch '
-                             '(= length of truncated BPTT)')
     parser.add_argument('--epoch', '-e', type=int, default=20,
                         help='Number of sweeps over the dataset to train')
     parser.add_argument('--gradclip', '-c', type=float, default=5,
                         help='Gradient norm threshold to clip')
+    parser.add_argument('--layer', '-l', type=int, default=2,
+                        help='Number of hidden layers')
     parser.add_argument('--unit', '-u', type=int, default=650,
-                        help='Number of LSTM units in each layer')
+                        help='Number of hidden units')
+    parser.add_argument('--maxlen', type=int, default=40,
+                        help='Batch size is reduced if the input sequence > ML')
     args = parser.parse_args()
 
     # logging info
@@ -68,14 +72,6 @@ def main():
         logging.basicConfig(
             level=logging.WARN, format='%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s')
         logging.warning('Skip DEBUG/INFO messages')
-
-    # check gpu argument
-    if args.gpu is not None:
-        logging.warn("--gpu option will be deprecated, please use --ngpu option.")
-        if args.gpu == -1:
-            args.ngpu = 0
-        else:
-            args.ngpu = 1
 
     # check CUDA_VISIBLE_DEVICES
     if args.ngpu > 0:
