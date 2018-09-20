@@ -214,10 +214,10 @@ def train(args):
                     optimizer.step()
                 # print/plot stats to args.outdir/results
                 train_result.report({
-                    "loss": loss,
-                    "acc": acc,
-                    "loss_ctc": loss_ctc,
-                    "loss_att": loss_att,
+                    "loss": float(loss),
+                    "acc": float(acc),
+                    "loss_ctc": float(loss_ctc),
+                    "loss_att": float(loss_att),
                     "grad_norm": grad_norm,
                     opt_key: get_opt_param()
                 })
@@ -231,10 +231,10 @@ def train(args):
                 loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
                 # print/plot stats to args.outdir/results
                 valid_result.report({
-                    "loss": loss,
-                    "acc": acc,
-                    "loss_ctc": loss_ctc,
-                    "loss_att": loss_att,
+                    "loss": float(loss),
+                    "acc": float(acc),
+                    "loss_ctc": float(loss_ctc),
+                    "loss_att": float(loss_att),
                     opt_key: get_opt_param()
                 })
 
