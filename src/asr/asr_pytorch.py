@@ -10,14 +10,6 @@ import logging
 import math
 import os
 
-# chainer related
-import chainer
-
-from chainer.datasets import TransformDataset
-from chainer import reporter as reporter_module
-from chainer import training
-from chainer.training import extensions
-
 # torch related
 import torch
 
@@ -38,6 +30,8 @@ from e2e_asr_th import E2E
 from e2e_asr_th import Loss
 from e2e_asr_th import pad_list
 
+from results import EpochResult, GlobalResult
+
 # for kaldi io
 import kaldi_io_py
 
@@ -52,87 +46,13 @@ matplotlib.use('Agg')
 
 REPORT_INTERVAL = 100
 
-
-class CustomEvaluator(extensions.Evaluator):
-    '''Custom evaluater for pytorch'''
-
-    def __init__(self, model, iterator, target, converter, device):
-        super(CustomEvaluator, self).__init__(iterator, target)
-        self.model = model
-        self.converter = converter
-        self.device = device
-
-    # The core part of the update routine can be customized by overriding.
-    def evaluate(self):
-        iterator = self._iterators['main']
-
-        if self.eval_hook:
-            self.eval_hook(self)
-
-        if hasattr(iterator, 'reset'):
-            iterator.reset()
-            it = iterator
-        else:
-            it = copy.copy(iterator)
-
-        summary = reporter_module.DictSummary()
-
-        self.model.eval()
-        with torch.no_grad():
-            for batch in it:
-                observation = {}
-                with reporter_module.report_scope(observation):
-                    # read scp files
-                    # x: original json with loaded features
-                    #    will be converted to chainer variable later
-                    x = self.converter(batch, self.device)
-                    self.model(*x)
-                summary.add(observation)
-        self.model.train()
-
-        return summary.compute_mean()
+def open_kaldi_feat(batch):
+    try:
+        yield load_inputs_and_targets(batch)
+    finally:
+        return []
 
 
-class CustomUpdater(training.StandardUpdater):
-    '''Custom updater for pytorch'''
-
-    def __init__(self, model, grad_clip_threshold, train_iter,
-                 optimizer, converter, device, ngpu):
-        super(CustomUpdater, self).__init__(train_iter, optimizer)
-        self.model = model
-        self.grad_clip_threshold = grad_clip_threshold
-        self.converter = converter
-        self.device = device
-        self.ngpu = ngpu
-
-    # The core part of the update routine can be customized by overriding.
-    def update_core(self):
-        # When we pass one iterator and optimizer to StandardUpdater.__init__,
-        # they are automatically named 'main'.
-        train_iter = self.get_iterator('main')
-        optimizer = self.get_optimizer('main')
-
-        # Get the next batch ( a list of json files)
-        batch = train_iter.next()
-        x = self.converter(batch, self.device)
-
-        # Compute the loss at this time step and accumulate it
-        optimizer.zero_grad()  # Clear the parameter gradients
-        if self.ngpu > 1:
-            loss = 1. / self.ngpu * self.model(*x)
-            loss.backward(loss.new_ones(self.ngpu))  # Backprop
-        else:
-            loss = self.model(*x)
-            loss.backward()  # Backprop
-        loss.detach()  # Truncate the graph
-        # compute the gradient norm to check if it is normal or not
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), self.grad_clip_threshold)
-        logging.info('grad norm={}'.format(grad_norm))
-        if math.isnan(grad_norm):
-            logging.warning('grad norm is nan. Do not update model.')
-        else:
-            optimizer.step()
 
 
 class CustomConverter(object):
@@ -175,7 +95,6 @@ def train(args):
     # by considering reproducability
     # revmoe type check
     if args.debugmode < 2:
-        chainer.config.type_check = False
         logging.info('torch type check is disabled')
     # use determinisitic computation or not
     if args.debugmode < 1:
@@ -260,98 +179,80 @@ def train(args):
                           args.maxlen_in, args.maxlen_out, args.minibatches)
     valid = make_batchset(valid_json, args.batch_size,
                           args.maxlen_in, args.maxlen_out, args.minibatches)
-    # hack to make batchsze argument as 1
-    # actual bathsize is included in a list
-    train_iter = chainer.iterators.MultiprocessIterator(
-        TransformDataset(train, converter.transform),
-        batch_size=1, n_processes=1, n_prefetch=8, maxtasksperchild=20)
-    valid_iter = chainer.iterators.SerialIterator(
-        TransformDataset(valid, converter.transform),
-        batch_size=1, repeat=False, shuffle=False)
-
-    # Set up a trainer
-    updater = CustomUpdater(
-        model, args.grad_clip, train_iter, optimizer, converter, device, args.ngpu)
-    trainer = training.Trainer(
-        updater, (args.epochs, 'epoch'), out=args.outdir)
-
+    
     # Resume from a snapshot
     if args.resume:
-        logging.info('resumed from %s' % args.resume)
-        torch_resume(args.resume, trainer)
+        logging.info('TODO resumed from %s' % args.resume)
+        #torch_resume(args.resume, trainer)
 
-    # Evaluate the model with the test dataset for each epoch
-    trainer.extend(CustomEvaluator(model, valid_iter, reporter, converter, device))
+    # training loop
+    result = GlobalResult(args.epochs, args.outdir)
+    for epoch in range(args.epochs):
+        model.train()
+        with result.epoch("main", train=True) as train_result:
+            for batch in np.random.permutation(train):
+                x=batch
+                # forward
+                loss_ctc, loss_att, acc = model.predictor(x)
+                loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
+                # backward
+                optimizer.zero_grad()  # Clear the parameter gradients
+                loss.backward()  # Backprop
+                loss.detach()  # Truncate the graph
+                # compute the gradient norm to check if it is normal or not
+                grad_norm = torch.nn.utils.clip_grad_norm(model.parameters(), args.grad_clip)
+                logging.info('grad norm={}'.format(grad_norm))
+                if math.isnan(grad_norm):
+                    logging.warning('grad norm is nan. Do not update model.')
+                else:
+                    optimizer.step()
+                # print/plot stats to args.outdir/results
+                train_result.report({
+                    "loss": loss,
+                    "acc": acc,
+                    "loss_ctc": loss_ctc,
+                    "loss_att": loss_att,
+                    "grad_norm": grad_norm,
+                    opt_key: get_opt_param()
+                })
 
-    # Save attention weight each epoch
-    if args.num_save_attention > 0 and args.mtlalpha != 1.0:
-        data = sorted(list(valid_json.items())[:args.num_save_attention],
-                      key=lambda x: int(x[1]['input'][0]['shape'][1]), reverse=True)
-        if hasattr(model, "module"):
-            att_vis_fn = model.module.predictor.calculate_all_attentions
-        else:
-            att_vis_fn = model.predictor.calculate_all_attentions
-        trainer.extend(PlotAttentionReport(
-            att_vis_fn, data, args.outdir + "/att_ws",
-            converter=converter, device=device), trigger=(1, 'epoch'))
+        with result.epoch("validation/main", train=False) as valid_result:
+            model.eval()
+            for batch in valid:
+                x=batch
+                # forward (without backward)
+                loss_ctc, loss_att, acc = model.predictor(x)
+                loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
+                # print/plot stats to args.outdir/results
+                valid_result.report({
+                    "loss": loss,
+                    "acc": acc,
+                    "loss_ctc": loss_ctc,
+                    "loss_att": loss_att,
+                    opt_key: get_opt_param()
+                })
 
-    # Make a plot for training and validation values
-    trainer.extend(extensions.PlotReport(['main/loss', 'validation/main/loss',
-                                          'main/loss_ctc', 'validation/main/loss_ctc',
-                                          'main/loss_att', 'validation/main/loss_att'],
-                                         'epoch', file_name='loss.png'))
-    trainer.extend(extensions.PlotReport(['main/acc', 'validation/main/acc'],
-                                         'epoch', file_name='acc.png'))
+        # save/load model
+        valid_avg = valid_result.average()
+        degrade = False
+        if best["loss"] > valid_avg["loss"]:
+            best["loss"] = valid_avg["loss"]
+            torch.save(model.state_dict(), args.outdir + "/model.loss.best")
+        elif args.criterion == "loss":
+            degrade = True
 
-    # Save best models
-    trainer.extend(extensions.snapshot_object(model, 'model.loss.best', savefun=torch_save),
-                   trigger=training.triggers.MinValueTrigger('validation/main/loss'))
-    if mtl_mode is not 'ctc':
-        trainer.extend(extensions.snapshot_object(model, 'model.acc.best', savefun=torch_save),
-                       trigger=training.triggers.MaxValueTrigger('validation/main/acc'))
+        if best["acc"] < valid_avg["acc"]:
+            best["acc"] = valid_avg["acc"]
+            torch.save(model.state_dict(), args.outdir + "/model.acc.best")
+        elif args.criterion == "acc":
+            degrade = True
 
-    # save snapshot which contains model and optimizer states
-    trainer.extend(torch_snapshot(), trigger=(1, 'epoch'))
-
-    # epsilon decay in the optimizer
-    if args.opt == 'adadelta':
-        if args.criterion == 'acc' and mtl_mode is not 'ctc':
-            trainer.extend(restore_snapshot(model, args.outdir + '/model.acc.best', load_fn=torch_load),
-                           trigger=CompareValueTrigger(
-                               'validation/main/acc',
-                               lambda best_value, current_value: best_value > current_value))
-            trainer.extend(adadelta_eps_decay(args.eps_decay),
-                           trigger=CompareValueTrigger(
-                               'validation/main/acc',
-                               lambda best_value, current_value: best_value > current_value))
-        elif args.criterion == 'loss':
-            trainer.extend(restore_snapshot(model, args.outdir + '/model.loss.best', load_fn=torch_load),
-                           trigger=CompareValueTrigger(
-                               'validation/main/loss',
-                               lambda best_value, current_value: best_value < current_value))
-            trainer.extend(adadelta_eps_decay(args.eps_decay),
-                           trigger=CompareValueTrigger(
-                               'validation/main/loss',
-                               lambda best_value, current_value: best_value < current_value))
-
-    # Write a log of evaluation statistics for each epoch
-    trainer.extend(extensions.LogReport(trigger=(REPORT_INTERVAL, 'iteration')))
-    report_keys = ['epoch', 'iteration', 'main/loss', 'main/loss_ctc', 'main/loss_att',
-                   'validation/main/loss', 'validation/main/loss_ctc', 'validation/main/loss_att',
-                   'main/acc', 'validation/main/acc', 'elapsed_time']
-    if args.opt == 'adadelta':
-        trainer.extend(extensions.observe_value(
-            'eps', lambda trainer: trainer.updater.get_optimizer('main').param_groups[0]["eps"]),
-            trigger=(REPORT_INTERVAL, 'iteration'))
-        report_keys.append('eps')
-    trainer.extend(extensions.PrintReport(
-        report_keys), trigger=(REPORT_INTERVAL, 'iteration'))
-
-    trainer.extend(extensions.ProgressBar(update_interval=REPORT_INTERVAL))
-
-    # Run the training
-    trainer.run()
-
+        if degrade:
+            key = "eps" if args.opt == "adadelta" else "lr"
+            for p in optimizer.param_groups:
+                p[key] *= args.eps_decay
+            model.load_state_dict(torch.load(args.outdir + "/model." + args.criterion + ".best"))
+    
 
 def recog(args):
     '''Run recognition'''
