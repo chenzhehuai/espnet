@@ -12,14 +12,12 @@ import sys
 
 from argparse import Namespace
 
-import chainer
 import numpy as np
 import six
 import torch
 import torch.nn.functional as F
 import warpctc_pytorch as warp_ctc
 
-from chainer import reporter
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.nn.utils.rnn import pad_packed_sequence
 
@@ -106,15 +104,6 @@ def th_accuracy(pad_outputs, pad_targets, ignore_label):
     return float(numerator) / float(denominator)
 
 
-class Reporter(chainer.Chain):
-    def report(self, loss_ctc, loss_att, acc, mtl_loss):
-        reporter.report({'loss_ctc': loss_ctc}, self)
-        reporter.report({'loss_att': loss_att}, self)
-        reporter.report({'acc': acc}, self)
-        logging.info('mtl loss:' + str(mtl_loss))
-        reporter.report({'loss': mtl_loss}, self)
-
-
 # TODO(watanabe) merge Loss and E2E: there is no need to make these separately
 class Loss(torch.nn.Module):
     """Multi-task learning loss module
@@ -130,7 +119,6 @@ class Loss(torch.nn.Module):
         self.loss = None
         self.accuracy = None
         self.predictor = predictor
-        self.reporter = Reporter()
 
     def forward(self, xs_pad, ilens, ys_pad):
         '''Multi-task learning loss forward
@@ -158,9 +146,7 @@ class Loss(torch.nn.Module):
             loss_ctc_data = float(loss_ctc)
 
         loss_data = float(self.loss)
-        if loss_data < CTC_LOSS_THRESHOLD and not math.isnan(loss_data):
-            self.reporter.report(loss_ctc_data, loss_att_data, acc, loss_data)
-        else:
+        if not (loss_data < CTC_LOSS_THRESHOLD and not math.isnan(loss_data)):
             logging.warning('loss (=%f) is not correct', loss_data)
 
         return self.loss

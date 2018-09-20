@@ -16,16 +16,9 @@ import torch
 # espnet related
 from asr_utils import adadelta_eps_decay
 from asr_utils import add_results_to_json
-from asr_utils import CompareValueTrigger
 from asr_utils import get_model_conf
 from asr_utils import load_inputs_and_targets
 from asr_utils import make_batchset
-from asr_utils import PlotAttentionReport
-from asr_utils import restore_snapshot
-from asr_utils import torch_load
-from asr_utils import torch_resume
-from asr_utils import torch_save
-from asr_utils import torch_snapshot
 from e2e_asr_th import E2E
 from e2e_asr_th import Loss
 from e2e_asr_th import pad_list
@@ -37,7 +30,6 @@ import kaldi_io_py
 
 # rnnlm
 import extlm_pytorch
-import lm_pytorch
 
 # matplotlib related
 import matplotlib
@@ -45,6 +37,10 @@ import numpy as np
 matplotlib.use('Agg')
 
 REPORT_INTERVAL = 100
+
+def torch_load(addr, model):
+    model.load_state_dict(torch.load(addr))
+
 
 class CustomConverter(object):
     """CUSTOM CONVERTER"""
@@ -132,7 +128,6 @@ def train(args):
     for key in sorted(vars(args).keys()):
         logging.info('ARGS: ' + key + ': ' + str(vars(args)[key]))
 
-    reporter = model.reporter
 
     # check the use of multi-gpu
     if args.ngpu > 1:
@@ -152,10 +147,6 @@ def train(args):
     elif args.opt == 'adam':
         optimizer = torch.optim.Adam(model.parameters())
 
-    # FIXME: TOO DIRTY HACK
-    setattr(optimizer, "target", reporter)
-    setattr(optimizer, "serialize", lambda s: reporter.serialize(s))
-
     # Setup a converter
     converter = CustomConverter(e2e.subsample[0])
 
@@ -173,8 +164,8 @@ def train(args):
     
     # Resume from a snapshot
     if args.resume:
-        logging.info('TODO resumed from %s' % args.resume)
-        #torch_resume(args.resume, trainer)
+        logging.info('resumed from %s' % args.resume)
+        torch_load(args.resume, model)
     
     best = dict(loss=float("inf"), acc=-float("inf"))
     opt_key = "eps" if args.opt == "adadelta" else "lr"
@@ -249,7 +240,7 @@ def train(args):
             key = "eps" if args.opt == "adadelta" else "lr"
             for p in optimizer.param_groups:
                 p[key] *= args.eps_decay
-            model.load_state_dict(torch.load(args.outdir + "/model." + args.criterion + ".best"))
+            torch_load(args.outdir + "/model." + args.criterion + ".best", model)
     
 
 def recog(args):
@@ -266,34 +257,8 @@ def recog(args):
     model = Loss(e2e, train_args.mtlalpha)
     torch_load(args.model, model)
 
-    # read rnnlm
-    if args.rnnlm:
-        rnnlm_args = get_model_conf(args.rnnlm, args.rnnlm_conf)
-        rnnlm = lm_pytorch.ClassifierWithState(
-            lm_pytorch.RNNLM(
-                len(train_args.char_list), rnnlm_args.layer, rnnlm_args.unit))
-        torch_load(args.rnnlm, rnnlm)
-        rnnlm.eval()
-    else:
-        rnnlm = None
 
-    if args.word_rnnlm:
-        rnnlm_args = get_model_conf(args.word_rnnlm, args.word_rnnlm_conf)
-        word_dict = rnnlm_args.char_list_dict
-        char_dict = {x: i for i, x in enumerate(train_args.char_list)}
-        word_rnnlm = lm_pytorch.ClassifierWithState(lm_pytorch.RNNLM(
-            len(word_dict), rnnlm_args.layer, rnnlm_args.unit))
-        torch_load(args.word_rnnlm, word_rnnlm)
-        word_rnnlm.eval()
-
-        if rnnlm is not None:
-            rnnlm = lm_pytorch.ClassifierWithState(
-                extlm_pytorch.MultiLevelLM(word_rnnlm.predictor,
-                                           rnnlm.predictor, word_dict, char_dict))
-        else:
-            rnnlm = lm_pytorch.ClassifierWithState(
-                extlm_pytorch.LookAheadWordLM(word_rnnlm.predictor,
-                                              word_dict, char_dict))
+    rnnlm = None #TODO because lm_pytorch needs chainer, we remove it here
 
     # read json data
     with open(args.recog_json, 'rb') as f:
