@@ -46,11 +46,10 @@ matplotlib.use('Agg')
 
 REPORT_INTERVAL = 100
 
-def open_kaldi_feat(batch):
-    try:
+class open_kaldi_feat:
+    def __enter__(self, batch):
         yield load_inputs_and_targets(batch)
-    finally:
-        return []
+        
 
 
 
@@ -184,6 +183,13 @@ def train(args):
     if args.resume:
         logging.info('TODO resumed from %s' % args.resume)
         #torch_resume(args.resume, trainer)
+    
+    best = dict(loss=float("inf"), acc=-float("inf"))
+    opt_key = "eps" if args.opt == "adadelta" else "lr"
+
+    def get_opt_param():
+        return optimizer.param_groups[0][opt_key]
+
 
     # training loop
     result = GlobalResult(args.epochs, args.outdir)
@@ -191,9 +197,9 @@ def train(args):
         model.train()
         with result.epoch("main", train=True) as train_result:
             for batch in np.random.permutation(train):
-                x=batch
+                x,y,z=converter([converter.transform(batch)], device)
                 # forward
-                loss_ctc, loss_att, acc = model.predictor(x)
+                loss_ctc, loss_att, acc = model.predictor(x,y,z)
                 loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
                 # backward
                 optimizer.zero_grad()  # Clear the parameter gradients
@@ -219,9 +225,9 @@ def train(args):
         with result.epoch("validation/main", train=False) as valid_result:
             model.eval()
             for batch in valid:
-                x=batch
+                x,y,z=converter([converter.transform(batch)], device)
                 # forward (without backward)
-                loss_ctc, loss_att, acc = model.predictor(x)
+                loss_ctc, loss_att, acc = model.predictor(x,y,z)
                 loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
                 # print/plot stats to args.outdir/results
                 valid_result.report({
