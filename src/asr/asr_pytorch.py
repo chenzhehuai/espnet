@@ -46,14 +46,6 @@ matplotlib.use('Agg')
 
 REPORT_INTERVAL = 100
 
-class open_kaldi_feat:
-    def __enter__(self, batch):
-        yield load_inputs_and_targets(batch)
-        
-
-
-
-
 class CustomConverter(object):
     """CUSTOM CONVERTER"""
 
