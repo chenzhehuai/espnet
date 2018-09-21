@@ -112,13 +112,18 @@ class Loss(torch.nn.Module):
     :param float mtlalpha: mtl coefficient value (0.0 ~ 1.0)
     """
 
-    def __init__(self, predictor, mtlalpha):
+    def __init__(self, predictor, mtlalpha, ngpu=0):
         super(Loss, self).__init__()
         assert 0.0 <= mtlalpha <= 1.0, "mtlalpha shoule be [0.0, 1.0]"
         self.mtlalpha = mtlalpha
         self.loss = None
         self.accuracy = None
         self.predictor = predictor
+        self.report = None
+        self.ngpu = ngpu
+
+    def set_report(self, report):
+        self.report = report
 
     def forward(self, xs_pad, ilens, ys_pad):
         '''Multi-task learning loss forward
@@ -146,7 +151,21 @@ class Loss(torch.nn.Module):
             loss_ctc_data = float(loss_ctc)
 
         loss_data = float(self.loss)
-        if not (loss_data < CTC_LOSS_THRESHOLD and not math.isnan(loss_data)):
+        assert self.report
+        if self.ngpu>1:
+            self.loss /= self.ngpu 
+            loss_data /= self.ngpu
+            loss_ctc_data /= self.ngpu
+            loss_att_data /= self.ngpu
+            acc /= self.ngpu
+        if loss_data < CTC_LOSS_THRESHOLD and not math.isnan(loss_data):
+            self.report.report({
+                "loss": loss_data,
+                "acc": acc,
+                "loss_ctc": loss_ctc_data,
+                "loss_att": loss_att_data
+                })
+        else:
             logging.warning('loss (=%f) is not correct', loss_data)
 
         return self.loss

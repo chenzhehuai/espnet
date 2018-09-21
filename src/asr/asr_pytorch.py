@@ -116,7 +116,10 @@ def train(args):
 
     # specify model architecture
     e2e = E2E(idim, odim, args)
-    model = Loss(e2e, args.mtlalpha)
+    # Setup a converter
+    converter = CustomConverter(e2e.subsample[0])
+    # design for para train
+    e2e = Loss(e2e, args.mtlalpha, args.ngpu) 
 
     # write model config
     if not os.path.exists(args.outdir):
@@ -130,8 +133,8 @@ def train(args):
 
 
     # check the use of multi-gpu
+    model = torch.nn.DataParallel(e2e, device_ids=list(range(args.ngpu))) if args.ngpu > 1 else e2e 
     if args.ngpu > 1:
-        model = torch.nn.DataParallel(model, device_ids=list(range(args.ngpu)))
         logging.info('batch size is automatically increased (%d -> %d)' % (
             args.batch_size, args.batch_size * args.ngpu))
         args.batch_size *= args.ngpu
@@ -146,9 +149,6 @@ def train(args):
             model.parameters(), rho=0.95, eps=args.eps)
     elif args.opt == 'adam':
         optimizer = torch.optim.Adam(model.parameters())
-
-    # Setup a converter
-    converter = CustomConverter(e2e.subsample[0])
 
     # read json data
     with open(args.train_json, 'rb') as f:
@@ -174,19 +174,22 @@ def train(args):
         return optimizer.param_groups[0][opt_key]
 
 
-    # training loop
     result = GlobalResult(args.epochs, args.outdir)
+    # training loop
     for epoch in range(args.epochs):
         model.train()
         with result.epoch("main", train=True) as train_result:
+            e2e.set_report(train_result) #criteria are recorded inside e2e
             for batch in np.random.permutation(train):
                 x,y,z=converter([converter.transform(batch)], device)
                 # forward
-                loss_ctc, loss_att, acc = model.predictor(x,y,z)
-                loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
+                loss = model(x,y,z)
                 # backward
                 optimizer.zero_grad()  # Clear the parameter gradients
-                loss.backward()  # Backprop
+                if args.ngpu > 1:
+                    loss.backward(loss.new_ones(args.ngpu))  # Backprop
+                else:
+                    loss.backward()  # Backprop
                 loss.detach()  # Truncate the graph
                 # compute the gradient norm to check if it is normal or not
                 grad_norm = torch.nn.utils.clip_grad_norm(model.parameters(), args.grad_clip)
@@ -195,31 +198,27 @@ def train(args):
                     logging.warning('grad norm is nan. Do not update model.')
                 else:
                     optimizer.step()
-                # print/plot stats to args.outdir/results
                 train_result.report({
-                    "loss": float(loss),
-                    "acc": float(acc),
-                    "loss_ctc": float(loss_ctc),
-                    "loss_att": float(loss_att),
                     "grad_norm": grad_norm,
                     opt_key: get_opt_param()
                 })
+                # print/plot stats to args.outdir/results
+                train_result.advance()
+
 
         with result.epoch("validation/main", train=False) as valid_result:
+            e2e.set_report(valid_result) #criteria are recorded inside e2e
             model.eval()
             for batch in valid:
                 x,y,z=converter([converter.transform(batch)], device)
                 # forward (without backward)
-                loss_ctc, loss_att, acc = model.predictor(x,y,z)
-                loss = args.mtlalpha * loss_ctc + (1 - args.mtlalpha) * loss_att
-                # print/plot stats to args.outdir/results
+                loss = model(x,y,z)
                 valid_result.report({
-                    "loss": float(loss),
-                    "acc": float(acc),
-                    "loss_ctc": float(loss_ctc),
-                    "loss_att": float(loss_att),
                     opt_key: get_opt_param()
                 })
+                # print/plot stats to args.outdir/results
+                valid_result.advance()
+
 
         # save/load model
         valid_avg = valid_result.average()

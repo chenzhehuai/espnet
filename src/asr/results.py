@@ -128,6 +128,8 @@ class EpochResult(object):
                 self.sum_dict[k] = to_float(v, k)
             else:
                 self.sum_dict[k] += to_float(v, k)
+    
+    def advance(self):
         self.iteration += 1
         if self.train and self.iteration % self.global_result.report_every == 0:
             self.logfun("train-iter: {}\t{}".format(self.iteration, self.summary()))
