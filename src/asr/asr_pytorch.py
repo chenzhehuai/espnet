@@ -165,7 +165,7 @@ def train(args):
     # Resume from a snapshot
     if args.resume:
         logging.info('resumed from %s' % args.resume)
-        torch_load(args.resume, model)
+        torch_load(args.resume, e2e)
     
     best = dict(loss=float("inf"), acc=-float("inf"))
     opt_key = "eps" if args.opt == "adadelta" else "lr"
@@ -225,13 +225,13 @@ def train(args):
         degrade = False
         if best["loss"] > valid_avg["loss"]:
             best["loss"] = valid_avg["loss"]
-            torch.save(model.state_dict(), args.outdir + "/model.loss.best")
+            torch.save(e2e.state_dict(), args.outdir + "/model.loss.best")
         elif args.criterion == "loss":
             degrade = True
 
         if best["acc"] < valid_avg["acc"]:
             best["acc"] = valid_avg["acc"]
-            torch.save(model.state_dict(), args.outdir + "/model.acc.best")
+            torch.save(e2e.state_dict(), args.outdir + "/model.acc.best")
         elif args.criterion == "acc":
             degrade = True
 
@@ -239,7 +239,7 @@ def train(args):
             key = "eps" if args.opt == "adadelta" else "lr"
             for p in optimizer.param_groups:
                 p[key] *= args.eps_decay
-            torch_load(args.outdir + "/model." + args.criterion + ".best", model)
+            torch_load(args.outdir + "/model." + args.criterion + ".best", e2e)
     
 
 def recog(args):
