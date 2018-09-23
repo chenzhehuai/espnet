@@ -39,7 +39,7 @@ matplotlib.use('Agg')
 REPORT_INTERVAL = 100
 
 def torch_load(addr, model):
-    model.load_state_dict(torch.load(addr))
+    model.load_state_dict(torch.load(addr, map_location=lambda storage, loc: storage))
 
 
 class CustomConverter(object):
@@ -255,7 +255,6 @@ def recog(args):
     e2e = E2E(idim, odim, train_args)
     model = Loss(e2e, train_args.mtlalpha)
     torch_load(args.model, model)
-
 
     rnnlm = None #TODO because lm_pytorch needs chainer, we remove it here
 
