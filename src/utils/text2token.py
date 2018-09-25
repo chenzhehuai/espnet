@@ -31,10 +31,21 @@ def main():
                         help='space symbol')
     parser.add_argument('--non-lang-syms', '-l', default=None, type=str,
                         help='list of non-linguistic symobles, e.g., <NOISE> etc.')
+    parser.add_argument('--special', default='', type=str,
+                        help='special symbol')
     parser.add_argument('text', type=str, default=False, nargs='?',
                         help='input text')
+
+
     args = parser.parse_args()
 
+    special_arr=[]
+    c=0
+    for i in args.special.split(","):
+      if i=="":
+        continue
+      special_arr.append([chr(c), i])
+      c+=1
     rs = []
     if args.non_lang_syms is not None:
         with open(args.non_lang_syms, 'r') as f:
@@ -48,6 +59,8 @@ def main():
     line = f.readline()
     n = args.nchar
     while line:
+        for ch,sp in special_arr:
+          line = line.replace(sp,ch)
         x = unicode(line, 'utf_8').split()
         print ' '.join(x[:args.skip_ncols]).encode('utf_8'),
         a = ' '.join(x[args.skip_ncols:])
@@ -84,7 +97,10 @@ def main():
             a_flat.append("".join(z))
 
         a_chars = [z.replace(' ', args.space) for z in a_flat]
-        print ' '.join(a_chars).encode('utf_8')
+        out=' '.join(a_chars).encode('utf_8')
+        for ch,sp in special_arr:
+          out = out.replace(ch,sp)
+        print out 
         line = f.readline()
 
 

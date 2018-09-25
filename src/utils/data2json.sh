@@ -3,7 +3,7 @@
 # Copyright 2017 Johns Hopkins University (Shinji Watanabe)
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
-. ./path.sh
+. ./path-work.sh
 
 nlsyms=""
 lang=""
@@ -11,6 +11,7 @@ feat="" # feat.scp
 oov="<unk>"
 bpecode=""
 verbose=0
+tokenaddin=""
 
 . utils/parse_options.sh
 
@@ -41,9 +42,9 @@ fi
 if [ ! -z ${bpecode} ]; then
     paste -d " " <(awk '{print $1}' ${dir}/text) <(cut -f 2- -d" " ${dir}/text | spm_encode --model=${bpecode} --output_format=piece) > ${tmpdir}/token.scp
 elif [ ! -z ${nlsyms} ]; then
-    text2token.py -s 1 -n 1 -l ${nlsyms} ${dir}/text > ${tmpdir}/token.scp
+    text2token.py -s 1 -n 1 -l ${nlsyms} $tokenaddin ${dir}/text > ${tmpdir}/token.scp
 else
-    text2token.py -s 1 -n 1 ${dir}/text > ${tmpdir}/token.scp
+    text2token.py -s 1 -n 1 $tokenaddin ${dir}/text > ${tmpdir}/token.scp
 fi
 cat ${tmpdir}/token.scp | utils/sym2int.pl --map-oov ${oov} -f 2- ${dic} > ${tmpdir}/tokenid.scp
 cat ${tmpdir}/tokenid.scp | awk '{print $1 " " NF-1}' > ${tmpdir}/olen.scp 
